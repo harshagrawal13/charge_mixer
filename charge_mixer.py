@@ -25,7 +25,10 @@ class ChargeMixer:
         print("Pre-processing dataframes...")
         self.preprocess_charge_mix_df()
         self.preprocess_costs_df()
-        self.preprocess_out_req_df()
+        # Merge both the DB to ensure we only take the rows needed.
+        self.merged = self.input_cost_df.merge(
+            self.charge_mix_df, on="inputs", how="inner"
+        )
 
     def preprocess_charge_mix_df(self):
         self.charge_mix_df.fillna(0, inplace=True)
@@ -37,9 +40,11 @@ class ChargeMixer:
             .multiply(0.01)
         )
         # After multiplying each value by yield, the values are in unit weight.
-        self.charge_mix_df.loc[:, "C":"impurity"] = self.charge_mix_df.loc[
-            :, "C":"impurity"
-        ].multiply(self.charge_mix_df["yield"], axis=0)
+        self.charge_mix_df.loc[:, "C":"impurity"] = (
+            self.charge_mix_df.loc[:, "C":"impurity"]
+            .multiply(self.charge_mix_df["yield"], axis=0)
+            .multiply(0.01)
+        )
 
     def preprocess_costs_df(self):
         self.input_cost_df = pd.read_csv("data/input_costs.csv")
@@ -51,59 +56,84 @@ class ChargeMixer:
         # Drop rows with cost_per_ton = 0. assuming raw material isn't available.
         self.input_cost_df = self.input_cost_df[self.input_cost_df["cost_per_ton"] != 0]
 
-    def preprocess_out_req_df(self):
-        self.out_req_df = pd.read_csv("data/eg_out.csv")
-        self.out_req_df.fillna(0, inplace=True)
-        fe_req = {
-            "elements": "Fe",
-            "min": 100 - self.out_req_df["min"].sum(),
-            "max": 100 - self.out_req_df["max"].sum(),
-        }
-        self.out_req_df.loc[len(self.out_req_df)] = fe_req
-
     def get_optimizer_inputs(self):
-        # Merge both the DB to ensure we only take the rows needed.
-        merged = self.input_cost_df.merge(self.charge_mix_df, on="inputs", how="inner")
+        # elements composition
+        elements_list = self.out_req_df["elements"].tolist()
 
-        # Get inputs about element compositions
-        df_inps_to_list = []
-        for col in merged.loc[:, "C":"impurity"].columns:
-            df_inps_to_list.append(merged[col].tolist())
-
-        # Get all element names serially
-        elements_list = merged.loc[:, "C":"impurity"].columns.tolist()
+        A_ub = []
+        for element in elements_list:
+            A_ub.append(self.merged[element].to_list())
 
         # Get all raw material names serially
-        raw_mat_names = merged["inputs"].tolist()
+        raw_mat_names = self.merged["inputs"].tolist()
 
         # Get all costs for raw materials serially
-        raw_mat_costs = merged["cost_per_ton"].tolist()
+        raw_mat_costs = self.merged["cost_per_ton"].tolist()
 
         # Get output requirements: taking minimum for now
-        all_outs = self.out_req_df["elements"].tolist()
-        min_percentages = []
-        max_percentages = []
-        for item in elements_list:
-            if item in all_outs:
-                min_percentages.append(
-                    self.out_req_df.loc[
-                        self.out_req_df["elements"] == item, "min"
-                    ].iloc[0]
-                )
-                max_percentages.append(
-                    self.out_req_df.loc[
-                        self.out_req_df["elements"] == item, "max"
-                    ].iloc[0]
-                )
-            else:
-                min_percentages.append(0)
-                max_percentages.append(0)
+        min_percentages = self.out_req_df["min"].multiply(0.01).to_list()
+        max_percentages = self.out_req_df["max"].multiply(0.01).to_list()
 
         return (
-            np.array(df_inps_to_list),
+            np.array(A_ub),
             elements_list,
             raw_mat_names,
             raw_mat_costs,
             min_percentages,
             max_percentages,
         )
+
+    def run_optimization(self):
+        (
+            A_ub,
+            elements_list,
+            raw_mat_names,
+            raw_mat_costs,
+            min_percentages,
+            max_percentages,
+        ) = self.get_optimizer_inputs()
+
+        costs = raw_mat_costs
+        A_min = -A_ub
+        b_min = -np.array(min_percentages)
+
+        A_max = A_ub
+        b_max = np.array(max_percentages)
+
+        result = linprog(
+            costs,
+            A_ub=np.vstack([A_min, A_max]),
+            b_ub=np.hstack([b_min, b_max]),
+            bounds=(0, None),
+        )
+
+        # Print the results
+        if result.success:
+            self.print_results(result, raw_mat_names)
+        return result
+
+    def print_results(self, result, raw_mat_names):
+        print("Optimization Successful!")
+        print("Input Mix:")
+
+        input_mix_items = []
+        for i, percentage in enumerate(result.x):
+            if percentage > 0:
+                input_mix_items.append(
+                    {
+                        "inputs": raw_mat_names[i],
+                        "percentage(%)": percentage * 100,
+                    }
+                )
+        input_mix_df = pd.DataFrame(input_mix_items)
+        print(input_mix_df)
+
+        print("\n Total Cost: ", result.fun)
+        final_comp_df = self.merged.join(
+            input_mix_df.set_index("inputs"), on="inputs", how="inner"
+        )
+        final_comp_df = final_comp_df.loc[:, "C":"Fe"].multiply(
+            final_comp_df["percentage(%)"] / 100, axis=0
+        )
+        print("\nFinal Composition (%):")
+        print(final_comp_df.sum(axis=0).multiply(100))
