@@ -5,21 +5,25 @@ from scipy.optimize import linprog
 
 
 class ChargeMixer:
-    def __init__(self, charge_mix_file_path, raw_mats_file_path, out_file_path) -> None:
+    def __init__(
+        self, raw_mat_info_file_path, raw_mat_cost_file_path, out_charge_mix_file_path
+    ) -> None:
         # Ensure file paths exist
         assert os.path.exists(
-            charge_mix_file_path
-        ), f"File {charge_mix_file_path} does not exist"
+            raw_mat_info_file_path
+        ), f"File {raw_mat_info_file_path} does not exist"
         assert os.path.exists(
-            raw_mats_file_path
-        ), f"File {raw_mats_file_path} does not exist"
-        assert os.path.exists(out_file_path), f"File {out_file_path} does not exist"
+            raw_mat_cost_file_path
+        ), f"File {raw_mat_cost_file_path} does not exist"
+        assert os.path.exists(
+            out_charge_mix_file_path
+        ), f"File {out_charge_mix_file_path} does not exist"
 
         # Read into dataframes
         print("Loading dataframes...")
-        self.charge_mix_df = pd.read_csv(charge_mix_file_path)
-        self.input_cost_df = pd.read_csv(raw_mats_file_path)
-        self.out_req_df = pd.read_csv(out_file_path)
+        self.charge_mix_df = pd.read_csv(raw_mat_info_file_path)
+        self.input_cost_df = pd.read_csv(raw_mat_cost_file_path)
+        self.out_req_df = pd.read_csv(out_charge_mix_file_path)
 
         # Preprocess dataframes
         print("Pre-processing dataframes...")
