@@ -64,6 +64,15 @@ class ChargeMixer:
         for element in elements_list:
             A_ub.append(self.merged[element].to_list())
 
+        remaining_elements = list(
+            set(self.merged.columns.tolist())
+            - {"impurity", "yield", "inputs", "cost_per_ton"}
+            - set(elements_list)
+        )
+
+        # Append the remaning elements to A_ub
+        A_ub.append(self.merged[remaining_elements].sum(axis=1).to_list())
+
         # Get all raw material names serially
         raw_mat_names = self.merged["inputs"].tolist()
 
@@ -74,43 +83,76 @@ class ChargeMixer:
         min_percentages = self.out_req_df["min"].multiply(0.01).to_list()
         max_percentages = self.out_req_df["max"].multiply(0.01).to_list()
 
+        others_min = 1 - sum(max_percentages)
+        others_max = 1 - sum(min_percentages)
+
+        min_percentages.append(others_min)
+        max_percentages.append(others_max)
+
         return (
             np.array(A_ub),
-            elements_list,
             raw_mat_names,
             raw_mat_costs,
             min_percentages,
             max_percentages,
         )
 
-    def run_optimization(self):
+    def relax_constraints(
+        self, min_percentages: list, max_percentages: list, relax_amount=2.0
+    ):
+        """Relax constraint for total weight by the set relax amount
+
+        Args:
+            min_percentages (list): Min Percentages.
+            max_percentages (list): Max Percentages
+            relax_amount (float, optional): relax amount float. Defaults to 2.0.
+        """
+        min_percentages[-1] = min_percentages[-1] - relax_amount
+        max_percentages[-1] = max_percentages[-1] + relax_amount
+        return min_percentages, max_percentages
+
+    def run_optimization(self, retries=10):
+        curr_try = 0
         (
             A_ub,
-            elements_list,
             raw_mat_names,
             raw_mat_costs,
             min_percentages,
             max_percentages,
         ) = self.get_optimizer_inputs()
 
-        costs = raw_mat_costs
-        A_min = -A_ub
-        b_min = -np.array(min_percentages)
+        while curr_try <= retries:
+            costs = raw_mat_costs
+            A_min = -A_ub
+            b_min = -np.array(min_percentages)
 
-        A_max = A_ub
-        b_max = np.array(max_percentages)
+            A_max = A_ub
+            b_max = np.array(max_percentages)
 
-        result = linprog(
-            costs,
-            A_ub=np.vstack([A_min, A_max]),
-            b_ub=np.hstack([b_min, b_max]),
-            bounds=(0, None),
-        )
+            result = linprog(
+                costs,
+                A_ub=np.vstack([A_min, A_max]),
+                b_ub=np.hstack([b_min, b_max]),
+                bounds=(0, None),
+            )
 
-        # Print the results
-        if result.success:
-            self.print_results(result, raw_mat_names)
-        return result
+            if curr_try % 5 == 0:
+                print("Current Try: ", curr_try + 1)
+
+            # Print the results
+            if result.success:
+                print("Current Try: ", curr_try + 1)
+                self.print_results(result, raw_mat_names)
+                return result
+
+            else:
+                min_percentages, max_percentages = self.relax_constraints(
+                    min_percentages=min_percentages, max_percentages=max_percentages
+                )
+                curr_try += 1
+
+        print("Max tries reached! Optimization Failed. Increase number of retries")
+        return None
 
     def print_results(self, result, raw_mat_names):
         print("Optimization Successful!")
@@ -135,5 +177,6 @@ class ChargeMixer:
         final_comp_df = final_comp_df.loc[:, "C":"Fe"].multiply(
             final_comp_df["percentage(%)"] / 100, axis=0
         )
-        print("\nFinal Composition (%):")
+        print("\nFinal Composition (unit weight):")
         print(final_comp_df.sum(axis=0).multiply(100))
+        print(f"Total: {final_comp_df.sum(axis=0).multiply(100).sum()}")
