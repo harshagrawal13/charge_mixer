@@ -51,7 +51,6 @@ class ChargeMixer:
         )
 
     def preprocess_costs_df(self):
-        self.input_cost_df = pd.read_csv("data/input_costs.csv")
         # Remove available qty column for now.
         self.input_cost_df.drop(["qty_avl_tons"], axis=1, inplace=True)
         self.input_cost_df["cost_per_ton"] = (
