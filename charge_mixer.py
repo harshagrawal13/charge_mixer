@@ -195,7 +195,8 @@ class ChargeMixer:
 
         print("\n Input Heat Size: ", self.heat_size)
         print("\n Tried Input Weight: ", input_mix_df["weight(ton)"].sum())
-        print("\n Total Cost: ", result.fun * self.heat_size)
+        print("\n Total Cost Per Heat: ", result.fun * self.heat_size)
+        print("\n Total Cost Per Ton: ", result.fun)
 
         final_comp_df = self.input_df.join(
             input_mix_df.set_index("inputs"), on="inputs", how="inner"
