@@ -6,58 +6,76 @@ from scipy.optimize import linprog
 
 class ChargeMixer:
     def __init__(
-        self, raw_mat_info_file_path, raw_mat_cost_file_path, out_charge_mix_file_path
+        self, raw_mat_info_file_path, out_charge_mix_file_path, heat_size=50
     ) -> None:
         # Ensure file paths exist
         assert os.path.exists(
             raw_mat_info_file_path
         ), f"File {raw_mat_info_file_path} does not exist"
         assert os.path.exists(
-            raw_mat_cost_file_path
-        ), f"File {raw_mat_cost_file_path} does not exist"
-        assert os.path.exists(
             out_charge_mix_file_path
         ), f"File {out_charge_mix_file_path} does not exist"
 
+        self.heat_size = heat_size
         # Read into dataframes
         print("Loading dataframes...")
-        self.charge_mix_df = pd.read_csv(raw_mat_info_file_path)
-        self.input_cost_df = pd.read_csv(raw_mat_cost_file_path)
+        self.input_df = pd.read_csv(raw_mat_info_file_path)
         self.out_req_df = pd.read_csv(out_charge_mix_file_path)
 
-        # Preprocess dataframes
+        # Preprocess the Input DataFrame
         print("Pre-processing dataframes...")
-        self.preprocess_charge_mix_df()
-        self.preprocess_costs_df()
-        # Merge both the DB to ensure we only take the rows needed.
-        self.merged = self.input_cost_df.merge(
-            self.charge_mix_df, on="inputs", how="inner"
-        )
+        self.preprocessing()
 
-    def preprocess_charge_mix_df(self):
-        self.charge_mix_df.fillna(0, inplace=True)
-        # Convert yield to percentage. eg: 95% -> 0.95
-        self.charge_mix_df["yield"] = (
-            self.charge_mix_df["yield"]
-            .str.replace("%", "")
-            .astype(float)
-            .multiply(0.01)
+    def preprocessing(self):
+        # Get the list of all columns
+        cols = list(self.input_df.columns)
+
+        self.non_comp_list = [
+            "inputs",
+            "cost_per_ton",
+            "qty_avl_tons",
+            "yield",
+            "opt_cost",
+        ]
+
+        # Miscelleneous step for sorting
+        for i in self.non_comp_list:
+            cols.remove(i)
+
+        # Remove Unwanted columns
+        if "impurity" in cols:
+            cols.remove("impurity")
+        if "Fe" in cols:
+            cols.remove("Fe")
+
+        cols = self.non_comp_list + cols
+
+        # Sorting the DataFrame
+        self.input_df = self.input_df[cols]
+
+        # Preprocessing Cost per Ton and checking availability
+        self.input_df["cost_per_ton"] = (
+            self.input_df["cost_per_ton"].str.replace(",", "").astype(int)
         )
+        self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
+
+        # Preprocessing Yield: Percentage to Float
+        if self.input_df["yield"].dtype != "float64":
+            self.input_df["yield"] = (
+                self.input_df["yield"].str.replace("%", "").astype(float).multiply(0.01)
+            )
+
         # After multiplying each value by yield, the values are in unit weight.
-        self.charge_mix_df.loc[:, "C":"impurity"] = (
-            self.charge_mix_df.loc[:, "C":"impurity"]
-            .multiply(self.charge_mix_df["yield"], axis=0)
+        self.input_df.iloc[:, len(self.non_comp_list) :] = (
+            self.input_df.iloc[:, len(self.non_comp_list) :]
+            .multiply(self.input_df["yield"], axis=0)
             .multiply(0.01)
         )
 
-    def preprocess_costs_df(self):
-        # Remove available qty column for now.
-        self.input_cost_df.drop(["qty_avl_tons"], axis=1, inplace=True)
-        self.input_cost_df["cost_per_ton"] = (
-            self.input_cost_df["cost_per_ton"].str.replace(",", "").astype(int)
-        )
-        # Drop rows with cost_per_ton = 0. assuming raw material isn't available.
-        self.input_cost_df = self.input_cost_df[self.input_cost_df["cost_per_ton"] != 0]
+        # Making the Fe column
+        self.input_df["Fe"] = self.input_df["yield"] - self.input_df.iloc[
+            :, len(self.non_comp_list) :
+        ].sum(axis=1)
 
     def get_optimizer_inputs(self):
         # elements composition
@@ -65,22 +83,24 @@ class ChargeMixer:
 
         A_ub = []
         for element in elements_list:
-            A_ub.append(self.merged[element].to_list())
+            A_ub.append(self.input_df[element].to_list())
 
         remaining_elements = list(
-            set(self.merged.columns.tolist())
-            - {"impurity", "yield", "inputs", "cost_per_ton"}
+            set(self.input_df.columns.tolist())
+            - {"yield", "inputs", "cost_per_ton", "opt_cost"}
             - set(elements_list)
         )
 
         # Append the remaning elements to A_ub
-        A_ub.append(self.merged[remaining_elements].sum(axis=1).to_list())
+        A_ub.append(self.input_df[remaining_elements].sum(axis=1).to_list())
 
         # Get all raw material names serially
-        raw_mat_names = self.merged["inputs"].tolist()
+        raw_mat_names = self.input_df["inputs"].tolist()
 
         # Get all costs for raw materials serially
-        raw_mat_costs = self.merged["cost_per_ton"].tolist()
+        raw_mat_costs = (
+            self.input_df["cost_per_ton"] + self.input_df["opt_cost"]
+        ).tolist()
 
         # Get output requirements: taking minimum for now
         min_percentages = self.out_req_df["min"].multiply(0.01).to_list()
@@ -167,19 +187,24 @@ class ChargeMixer:
                 input_mix_items.append(
                     {
                         "inputs": raw_mat_names[i],
-                        "percentage(%)": percentage * 100,
+                        "weight(ton)": percentage * self.heat_size,
                     }
                 )
         input_mix_df = pd.DataFrame(input_mix_items)
         print(input_mix_df)
 
-        print("\n Total Cost: ", result.fun)
-        final_comp_df = self.merged.join(
+        print("\n Input Heat Size: ", self.heat_size)
+        print("\n Tried Input Weight: ", input_mix_df["weight(ton)"].sum())
+        print("\n Total Cost: ", result.fun * self.heat_size)
+
+        final_comp_df = self.input_df.join(
             input_mix_df.set_index("inputs"), on="inputs", how="inner"
         )
-        final_comp_df = final_comp_df.loc[:, "C":"Fe"].multiply(
-            final_comp_df["percentage(%)"] / 100, axis=0
+        final_comp_df = final_comp_df.iloc[:, len(self.non_comp_list) : -1].multiply(
+            final_comp_df["weight(ton)"], axis=0
         )
-        print("\nFinal Composition (unit weight):")
-        print(final_comp_df.sum(axis=0).multiply(100))
-        print(f"Total: {final_comp_df.sum(axis=0).multiply(100).sum()}")
+        print("\nFinal Composition (percentage):")
+        print(final_comp_df.sum(axis=0).multiply(100 / self.heat_size))
+        print(
+            f"Total: {final_comp_df.sum(axis=0).multiply(100 / self.heat_size).sum()}"
+        )
