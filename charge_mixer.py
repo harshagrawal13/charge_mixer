@@ -36,6 +36,7 @@ class ChargeMixer:
             "qty_avl_tons",
             "yield",
             "opt_cost",
+            "avl_quantity",
         ]
 
         # Miscelleneous step for sorting
@@ -87,10 +88,14 @@ class ChargeMixer:
 
         remaining_elements = list(
             set(self.input_df.columns.tolist())
-            - {"yield", "inputs", "cost_per_ton", "opt_cost"}
+            - {"yield", "inputs", "cost_per_ton", "opt_cost", "avl_quantity"}
             - set(elements_list)
         )
 
+        bounds = []
+        avl_bnds = self.input_df["avl_quantity"].to_list()
+        for i in avl_bnds:
+            bounds.append((0, i))
         # Append the remaning elements to A_ub
         A_ub.append(self.input_df[remaining_elements].sum(axis=1).to_list())
 
@@ -118,6 +123,7 @@ class ChargeMixer:
             raw_mat_costs,
             min_percentages,
             max_percentages,
+            bounds,
         )
 
     def relax_constraints(
@@ -142,6 +148,7 @@ class ChargeMixer:
             raw_mat_costs,
             min_percentages,
             max_percentages,
+            bounds,
         ) = self.get_optimizer_inputs()
 
         while curr_try <= retries:
@@ -156,7 +163,7 @@ class ChargeMixer:
                 costs,
                 A_ub=np.vstack([A_min, A_max]),
                 b_ub=np.hstack([b_min, b_max]),
-                bounds=(0, None),
+                bounds=bounds,
             )
 
             if curr_try % 5 == 0:
@@ -166,6 +173,7 @@ class ChargeMixer:
             if result.success:
                 print("Current Try: ", curr_try + 1)
                 self.print_results(result, raw_mat_names)
+
                 return result
 
             else:
@@ -175,6 +183,7 @@ class ChargeMixer:
                 curr_try += 1
 
         print("Max tries reached! Optimization Failed. Increase number of retries")
+
         return None
 
     def print_results(self, result, raw_mat_names):
