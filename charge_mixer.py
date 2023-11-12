@@ -34,7 +34,6 @@ class ChargeMixer:
             "inputs",
             "cost_per_ton",
             "qty_avl_tons",
-            "yield",
             "opt_cost",
             "avl_quantity",
         ]
@@ -60,23 +59,15 @@ class ChargeMixer:
         )
         self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
 
-        # Preprocessing Yield: Percentage to Float
-        if self.input_df["yield"].dtype != "float64":
-            self.input_df["yield"] = (
-                self.input_df["yield"].str.replace("%", "").astype(float).multiply(0.01)
-            )
-
         # After multiplying each value by yield, the values are in unit weight.
-        self.input_df.iloc[:, len(self.non_comp_list) :] = (
-            self.input_df.iloc[:, len(self.non_comp_list) :]
-            .multiply(self.input_df["yield"], axis=0)
-            .multiply(0.01)
-        )
+        self.input_df.iloc[:, len(self.non_comp_list) :] = self.input_df.iloc[
+            :, len(self.non_comp_list) :
+        ].multiply(0.01)
 
         # Making the Fe column
-        self.input_df["Fe"] = self.input_df["yield"] - self.input_df.iloc[
-            :, len(self.non_comp_list) :
-        ].sum(axis=1)
+        self.input_df["Fe"] = 1 - self.input_df.iloc[:, len(self.non_comp_list) :].sum(
+            axis=1
+        )
 
     def get_optimizer_inputs(self):
         # elements composition
@@ -88,7 +79,7 @@ class ChargeMixer:
 
         remaining_elements = list(
             set(self.input_df.columns.tolist())
-            - {"yield", "inputs", "cost_per_ton", "opt_cost", "avl_quantity"}
+            - {"inputs", "cost_per_ton", "opt_cost", "avl_quantity"}
             - set(elements_list)
         )
 
