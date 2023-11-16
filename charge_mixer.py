@@ -30,23 +30,23 @@ class ChargeMixer:
         # Get the list of all columns
         cols = list(self.input_df.columns)
 
-        self.non_comp_list = [
-            "inputs",
-            "cost_per_ton",
-            "qty_avl_tons",
-            "opt_cost",
-            "avl_quantity",
-        ]
-
-        # Miscelleneous step for sorting
-        for i in self.non_comp_list:
-            cols.remove(i)
-
         # Remove Unwanted columns
         if "impurity" in cols:
             cols.remove("impurity")
         if "Fe" in cols:
             cols.remove("Fe")
+
+        self.non_comp_list = [
+            "inputs",
+            "cost_per_ton",
+            "opt_cost",
+            "avl_quantity",
+            "yield",
+        ]
+
+        # Miscelleneous step for sorting
+        for i in self.non_comp_list:
+            cols.remove(i)
 
         cols = self.non_comp_list + cols
 
@@ -54,9 +54,14 @@ class ChargeMixer:
         self.input_df = self.input_df[cols]
 
         # Preprocessing Cost per Ton and checking availability
-        self.input_df["cost_per_ton"] = (
-            self.input_df["cost_per_ton"].str.replace(",", "").astype(int)
-        )
+        if self.input_df["cost_per_ton"].dtype == str:
+            self.input_df["cost_per_ton"] = (
+                self.input_df["cost_per_ton"].str.replace(",", "").astype(int)
+            )
+        if self.input_df["opt_cost"].dtype == str:
+            self.input_df["opt_cost"] = (
+                self.input_df["opt_cost"].str.replace(",", "").astype(int)
+            )
         self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
 
         # After multiplying each value by yield, the values are in unit weight.
@@ -64,49 +69,38 @@ class ChargeMixer:
             :, len(self.non_comp_list) :
         ].multiply(0.01)
 
-        # Making the Fe column
-        self.input_df["Fe"] = 1 - self.input_df.iloc[:, len(self.non_comp_list) :].sum(
-            axis=1
+        self.input_df["yield"] = (
+            self.input_df["yield"].str.replace("%", "").astype(float) * 0.01
         )
 
     def get_optimizer_inputs(self):
         # elements composition
         elements_list = self.out_req_df["elements"].tolist()
+        elements_list += ["yield"]
 
         A_ub = []
         for element in elements_list:
             A_ub.append(self.input_df[element].to_list())
 
-        remaining_elements = list(
-            set(self.input_df.columns.tolist())
-            - {"inputs", "cost_per_ton", "opt_cost", "avl_quantity"}
-            - set(elements_list)
-        )
-
         bounds = []
         avl_bnds = self.input_df["avl_quantity"].to_list()
         for i in avl_bnds:
             bounds.append((0, i))
-        # Append the remaning elements to A_ub
-        A_ub.append(self.input_df[remaining_elements].sum(axis=1).to_list())
 
         # Get all raw material names serially
         raw_mat_names = self.input_df["inputs"].tolist()
 
         # Get all costs for raw materials serially
         raw_mat_costs = (
-            self.input_df["cost_per_ton"] + self.input_df["opt_cost"]
+            (self.input_df["cost_per_ton"] + self.input_df["opt_cost"])
         ).tolist()
 
         # Get output requirements: taking minimum for now
         min_percentages = self.out_req_df["min"].multiply(0.01).to_list()
         max_percentages = self.out_req_df["max"].multiply(0.01).to_list()
 
-        others_min = 1 - sum(max_percentages)
-        others_max = 1 - sum(min_percentages)
-
-        min_percentages.append(others_min)
-        max_percentages.append(others_max)
+        min_percentages += [1.0]
+        max_percentages += [1.5]
 
         return (
             np.array(A_ub),
