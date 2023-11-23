@@ -12,7 +12,7 @@ class ChargeMixer:
         self,
         raw_mat_info_file_path,
         out_charge_mix_file_path,
-        test_against_existing=True,
+        mode,
         heat_size=50,
         furnace_size=100,
     ) -> None:
@@ -26,7 +26,7 @@ class ChargeMixer:
 
         self.heat_size = heat_size
         self.furnace_size = furnace_size
-        self.test_against_existing = test_against_existing
+        self.mode = mode
 
         # Read into dataframes
         print("Loading dataframes...")
@@ -38,10 +38,27 @@ class ChargeMixer:
         self.preprocessing()
 
     def preprocessing(self):
+        if self.mode == "with_existing_with_weight_constraints":
+            self.test_against_existing = True
+            self.weight_constraint = True
+        if self.mode == "with_existing_no_weight_constraints":
+            self.test_against_existing = True
+            self.weight_constraint = False
+        if self.mode == "vanilla_optimization":
+            self.test_against_existing = False
+            self.weight_constraint = False
+
         if self.test_against_existing and all(
             self.input_df["substd_weight(Tons)"].fillna(0) == 0
         ):
             print("Please Enter your Existing Weights in the Input File")
+            return
+        if (
+            self.weight_constraint
+            and all(self.input_df["min_weight"].fillna(0) == 0)
+            and all(self.input_df["max_weight"].fillna("-") == "-")
+        ):
+            print("Please Enter your Min-Max Weights Constraints in the Input File")
             return
 
         self.non_comp_list = [
@@ -50,9 +67,14 @@ class ChargeMixer:
             "opt_cost",
             "avl_quantity",
             "total_recovery_weight",
+            "min_weight",
+            "max_weight",
         ]
 
         if self.test_against_existing:
+            self.input_df = self.input_df[
+                self.input_df["substd_weight(Tons)"].fillna(0) != 0
+            ]
             self.non_comp_list = self.non_comp_list + ["substd_weight(Tons)"]
         else:
             self.input_df = self.input_df.drop(columns=["substd_weight(Tons)"])
@@ -135,10 +157,14 @@ class ChargeMixer:
         for element in elements_list:
             A_ub.append(self.input_df[element].to_list())
 
-        bounds = []
-        avl_bnds = self.input_df["avl_quantity"].to_list()
-        for i in avl_bnds:
-            bounds.append((0, i))
+        if self.weight_constraint:
+            bounds = list(
+                zip(self.input_df["min_weight"].fillna(0), self.input_df["max_weight"])
+            )
+
+        else:
+            avl_bnds = self.input_df["avl_quantity"].to_list()
+            bounds = list(map(lambda b: (0, b), avl_bnds))
 
         # Get all raw material names serially
         raw_mat_names = self.input_df["inputs"].tolist()
