@@ -13,7 +13,6 @@ class ChargeMixer:
         raw_mat_info_file_path,
         out_charge_mix_file_path,
         mode,
-        heat_size=50,
         furnace_size=100,
     ) -> None:
         # Ensure file paths exist
@@ -24,9 +23,14 @@ class ChargeMixer:
             out_charge_mix_file_path
         ), f"File {out_charge_mix_file_path} does not exist"
 
-        self.heat_size = heat_size
         self.furnace_size = furnace_size
         self.mode = mode
+
+        assert self.mode in [
+            "with_existing_with_weight_constraints",
+            "with_existing_no_weight_constraints",
+            "vanilla_optimization",
+        ], "Please enter a valid mode"
 
         # Read into dataframes
         print("Loading dataframes...")
@@ -121,33 +125,6 @@ class ChargeMixer:
                 * 0.01
             )
 
-    def substandard_constraints_results(self):
-        self.substd_constraints = pd.DataFrame(
-            self.input_df.iloc[:, len(self.non_comp_list) :]
-            .fillna(0)
-            .multiply(
-                self.input_df["substd_weight(Tons)"]
-                / (self.input_df["substd_weight(Tons)"].sum(0)),
-                axis="index",
-            )
-            .multiply(100)
-            .sum(axis=0),
-            columns=["substd_percent"],
-        ).reset_index(names=["elements"])
-        self.substd_constraints = self.out_req_df.merge(
-            self.substd_constraints, how="right", on="elements"
-        )
-
-        self.substd_constraints["InRange"] = (
-            self.substd_constraints["max"] > self.substd_constraints["substd_percent"]
-        ) & (self.substd_constraints["min"] < self.substd_constraints["substd_percent"])
-
-        self.substd_constraints = self.substd_constraints.fillna("-")
-
-        self.substd_constraints.loc[
-            self.substd_constraints["min"] == "-", "InRange"
-        ] = True
-
     def get_optimizer_inputs(self):
         # elements composition
         elements_list = self.out_req_df["elements"].tolist()
@@ -159,7 +136,12 @@ class ChargeMixer:
 
         if self.weight_constraint:
             bounds = list(
-                zip(self.input_df["min_weight"].fillna(0), self.input_df["max_weight"])
+                zip(
+                    self.input_df["min_weight"]
+                    .fillna(0)
+                    .multiply(1 / self.furnace_size),
+                    self.input_df["max_weight"].multiply(1 / self.furnace_size),
+                )
             )
 
         else:
@@ -190,22 +172,7 @@ class ChargeMixer:
             bounds,
         )
 
-    def relax_constraints(
-        self, min_percentages: list, max_percentages: list, relax_amount=0.001
-    ):
-        """Relax constraint for total weight by the set relax amount
-
-        Args:
-            min_percentages (list): Min Percentages.
-            max_percentages (list): Max Percentages
-            relax_amount (float, optional): relax amount float. Defaults to 2.0.
-        """
-        min_percentages[-1] = min_percentages[-1] - relax_amount
-        max_percentages[-1] = max_percentages[-1] + relax_amount
-        return min_percentages, max_percentages
-
-    def run_optimization(self, retries=10):
-        curr_try = 0
+    def run_optimization(self):
         (
             A_ub,
             raw_mat_names,
@@ -215,48 +182,64 @@ class ChargeMixer:
             bounds,
         ) = self.get_optimizer_inputs()
 
-        while curr_try <= retries:
-            costs = raw_mat_costs
-            A_min = -A_ub
-            b_min = -np.array(min_percentages)
+        costs = raw_mat_costs
+        A_min = -A_ub
+        b_min = -np.array(min_percentages)
 
-            A_max = A_ub
-            b_max = np.array(max_percentages)
+        A_max = A_ub
+        b_max = np.array(max_percentages)
 
-            result = linprog(
-                costs,
-                A_ub=np.vstack([A_min, A_max]),
-                b_ub=np.hstack([b_min, b_max]),
-                bounds=bounds,
-            )
+        result = linprog(
+            costs,
+            A_ub=np.vstack([A_min, A_max]),
+            b_ub=np.hstack([b_min, b_max]),
+            bounds=bounds,
+        )
 
-            # Print the results
-            if result.success:
-                self.print_results(result, raw_mat_names)
+        # Print the results
+        if result.success:
+            self.print_results(result, raw_mat_names)
 
-                return result
+            return result
 
-            else:
-                min_percentages, max_percentages = self.relax_constraints(
-                    min_percentages=min_percentages, max_percentages=max_percentages
-                )
-                curr_try += 1
-
-            if curr_try % 5 == 0:
-                print("Current Try: ", curr_try + 1)
-
-        print("Max tries reached! Optimization Failed. Increase number of retries")
-
-        return None
+        else:
+            print("Optimization Failed! Please relax constraints...")
+            return None
 
     def substandard_test_results(self, input_mix_df):
+        self.substd_constraints = pd.DataFrame(
+            self.input_df.iloc[:, len(self.non_comp_list) :]
+            .fillna(0)
+            .multiply(
+                self.input_df["substd_weight(Tons)"]
+                / (self.input_df["substd_weight(Tons)"].sum(0)),
+                axis="index",
+            )
+            .multiply(100)
+            .sum(axis=0),
+            columns=["substd_percent"],
+        ).reset_index(names=["elements"])
+        self.substd_constraints = self.out_req_df.merge(
+            self.substd_constraints, how="right", on="elements"
+        )
+
+        self.substd_constraints["InRange"] = (
+            self.substd_constraints["max"] > self.substd_constraints["substd_percent"]
+        ) & (self.substd_constraints["min"] < self.substd_constraints["substd_percent"])
+
+        self.substd_constraints = self.substd_constraints.fillna("-")
+
+        self.substd_constraints.loc[
+            self.substd_constraints["min"] == "-", "InRange"
+        ] = True
+
         final_comp_df = self.input_df.merge(input_mix_df, on="inputs", how="left")
         final_comp_df = final_comp_df.iloc[:, len(self.non_comp_list) : -1].multiply(
             final_comp_df["optz_weight(Tons)"], axis=0
         )
 
         final_comp_df = pd.DataFrame(
-            final_comp_df.sum(axis=0).multiply(100 / self.heat_size),
+            final_comp_df.sum(axis=0).multiply(100),
             columns=["optz_percent"],
         ).reset_index(names=["elements"])
 
@@ -275,6 +258,12 @@ class ChargeMixer:
             (self.final_result_df["substd_weight(Tons)"] != 0)
             | (self.final_result_df["optz_weight(Tons)"] != 0)
         ].reset_index(drop=True)
+
+        self.final_result_df["optz_weight(Tons)"] = (
+            self.final_result_df["optz_weight(Tons)"]
+            .multiply(1 / self.final_result_df["optz_weight(Tons)"].sum())
+            .multiply(self.furnace_size)
+        )
 
         self.final_result_df["substd_cost(Rs.)"] = self.final_result_df[
             "substd_weight(Tons)"
@@ -305,17 +294,17 @@ class ChargeMixer:
         )
 
         final_comp_df = pd.DataFrame(
-            final_comp_df.sum(axis=0).multiply(100 / self.heat_size),
+            final_comp_df.sum(axis=0).multiply(100),
             columns=["optz_percent"],
         ).reset_index(names=["elements"])
 
         self.final_constraint_df = self.out_req_df.merge(
             final_comp_df, how="outer", on="elements"
-        ).fillna("-")
+        )
 
     def print_results(self, result, raw_mat_names):
         print("Optimization Successful!")
-        print(f"\nRequired Heat(Output) Size: {self.heat_size} Tons ")
+        print(f"\nFurnace(Input) Size: {self.furnace_size} Tons ")
         print("\nInput Mix:")
 
         input_mix_items = []
@@ -323,13 +312,18 @@ class ChargeMixer:
             input_mix_items.append(
                 {
                     "inputs": raw_mat_names[i],
-                    "optz_weight(Tons)": percentage * self.heat_size,
+                    "optz_weight(Tons)": percentage,
                 }
             )
         input_mix_df = pd.DataFrame(input_mix_items)
 
         out_df = input_mix_df[input_mix_df["optz_weight(Tons)"] != 0].reset_index(
             drop=True
+        )
+        out_df["optz_weight(Tons)"] = (
+            out_df["optz_weight(Tons)"]
+            .multiply(1 / out_df["optz_weight(Tons)"].sum())
+            .multiply(self.furnace_size)
         )
         out_df = out_df.merge(self.input_df, on="inputs", how="left")
         out_df["Cost(Rs.)"] = (out_df["cost_per_ton"] + out_df["opt_cost"]).multiply(
@@ -349,29 +343,24 @@ class ChargeMixer:
             )
         )
 
-        total_weight = input_mix_df["optz_weight(Tons)"].sum()
+        laddle_size = self.furnace_size * (
+            1 / (input_mix_df["optz_weight(Tons)"].sum())
+        )
 
         if self.test_against_existing:
-            self.substandard_constraints_results()
             self.substandard_test_results(input_mix_df)
         else:
             self.optimization_results(input_mix_df)
 
-        print(f"\nTotal Cost Per Ton (Total/Heat Size): {result.fun:.2f} Rs.")
-
-        print(f"\nFurnace Size: {self.furnace_size} Tons ")
-        print(
-            "Number of furnace cycles required: ",
-            total_weight // self.furnace_size + 1,
-        )
-        print(
-            f"Weight per Cycle: {total_weight / (total_weight // self.furnace_size + 1):.3f} Tons",
-        )
+        print(f"\nLaddle(Output) Size: {laddle_size:.2f} Tons ")
+        print(f"Total Cost Per Ton (Total/Laddle Size): {result.fun:.2f} Rs.")
 
         print("\nFinal Composition (percentage):")
         print(
             tabulate(
-                self.final_constraint_df,
+                self.final_constraint_df.round(3)
+                .replace(to_replace=0.0, value=np.nan)
+                .fillna("-"),
                 headers="keys",
                 tablefmt="psql",
                 floatfmt=".3f",
@@ -383,7 +372,10 @@ class ChargeMixer:
                 tabulate(
                     self.final_result_df[
                         ["inputs", "substd_weight(Tons)", "optz_weight(Tons)"]
-                    ].fillna("-"),
+                    ]
+                    .round(3)
+                    .replace(to_replace=0.0, value=np.nan)
+                    .fillna("-"),
                     headers="keys",
                     tablefmt="psql",
                     floatfmt=".3f",
@@ -396,9 +388,18 @@ class ChargeMixer:
                 tabulate(
                     self.final_result_df[
                         ["inputs", "substd_cost(Rs.)", "optimised_cost(Rs.)"]
-                    ].fillna("-"),
+                    ]
+                    .round(3)
+                    .replace(to_replace=0.0, value=np.nan)
+                    .fillna("-"),
                     headers="keys",
                     tablefmt="psql",
                     floatfmt=".3f",
                 )
             )
+
+            savings = (
+                self.final_result_df["substd_cost(Rs.)"].sum()
+                - self.final_result_df["optimised_cost(Rs.)"].sum()
+            )
+            print(f"\n Total Savings: {savings:.2f} Rs.")
