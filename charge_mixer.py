@@ -65,6 +65,14 @@ class ChargeMixer:
             print("Please Enter your Min-Max Weights Constraints in the Input File")
             return
 
+        if self.input_df["total_recovery_weight"].dtype != float:
+            self.input_df["total_recovery_weight"] = (
+                self.input_df["total_recovery_weight"]
+                .str.replace("%", "")
+                .astype(float)
+                * 0.01
+            )
+
         self.non_comp_list = [
             "inputs",
             "cost_per_ton",
@@ -79,7 +87,12 @@ class ChargeMixer:
             self.input_df = self.input_df[
                 self.input_df["substd_weight(Tons)"].fillna(0) != 0
             ]
+            self.input_df["substd_weight(Tons)"] = (
+                self.input_df["substd_weight(Tons)"]
+                * self.input_df["total_recovery_weight"]
+            )
             self.non_comp_list = self.non_comp_list + ["substd_weight(Tons)"]
+
         else:
             self.input_df = self.input_df.drop(columns=["substd_weight(Tons)"])
 
@@ -116,14 +129,6 @@ class ChargeMixer:
         self.input_df.iloc[:, len(self.non_comp_list) :] = self.input_df.iloc[
             :, len(self.non_comp_list) :
         ].multiply(0.01)
-
-        if self.input_df["total_recovery_weight"].dtype != float:
-            self.input_df["total_recovery_weight"] = (
-                self.input_df["total_recovery_weight"]
-                .str.replace("%", "")
-                .astype(float)
-                * 0.01
-            )
 
     def get_optimizer_inputs(self):
         # elements composition
