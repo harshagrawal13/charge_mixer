@@ -34,8 +34,8 @@ class ChargeMixer:
 
         # Read into dataframes
         print("Loading dataframes...")
-        self.input_df = pd.read_csv(raw_mat_info_file_path)
-        self.out_req_df = pd.read_csv(out_charge_mix_file_path).fillna(0.0)
+        self.input_df = pd.read_json(raw_mat_info_file_path)
+        self.out_req_df = pd.read_json(out_charge_mix_file_path).fillna(0.0)
 
         # Preprocess the Input DataFrame
         print("Pre-processing dataframes...")
@@ -76,7 +76,6 @@ class ChargeMixer:
         self.non_comp_list = [
             "inputs",
             "cost_per_ton",
-            "opt_cost",
             "avl_quantity",
             "total_recovery_weight",
             "min_weight",
@@ -87,10 +86,6 @@ class ChargeMixer:
             self.input_df = self.input_df[
                 self.input_df["substd_weight(Tons)"].fillna(0) != 0
             ]
-            self.input_df["substd_weight(Tons)"] = (
-                self.input_df["substd_weight(Tons)"]
-                * self.input_df["total_recovery_weight"]
-            )
             self.non_comp_list = self.non_comp_list + ["substd_weight(Tons)"]
 
         else:
@@ -118,10 +113,6 @@ class ChargeMixer:
         if self.input_df["cost_per_ton"].dtype == str:
             self.input_df["cost_per_ton"] = (
                 self.input_df["cost_per_ton"].str.replace(",", "").astype(int)
-            )
-        if self.input_df["opt_cost"].dtype == str:
-            self.input_df["opt_cost"] = (
-                self.input_df["opt_cost"].str.replace(",", "").astype(int)
             )
         self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
 
@@ -157,9 +148,7 @@ class ChargeMixer:
         raw_mat_names = self.input_df["inputs"].tolist()
 
         # Get all costs for raw materials serially
-        raw_mat_costs = (
-            (self.input_df["cost_per_ton"] + self.input_df["opt_cost"])
-        ).tolist()
+        raw_mat_costs = (self.input_df["cost_per_ton"]).tolist()
 
         # Get output requirements: taking minimum for now
         min_percentages = self.out_req_df["min"].multiply(0.01).to_list()
@@ -216,8 +205,16 @@ class ChargeMixer:
             self.input_df.iloc[:, len(self.non_comp_list) :]
             .fillna(0)
             .multiply(
-                self.input_df["substd_weight(Tons)"]
-                / (self.input_df["substd_weight(Tons)"].sum(0)),
+                (
+                    self.input_df["substd_weight(Tons)"]
+                    * self.input_df["total_recovery_weight"]
+                )
+                / (
+                    (
+                        self.input_df["substd_weight(Tons)"]
+                        * self.input_df["total_recovery_weight"]
+                    ).sum(0)
+                ),
                 axis="index",
             )
             .multiply(100)
@@ -272,15 +269,11 @@ class ChargeMixer:
 
         self.final_result_df["substd_cost(Rs.)"] = self.final_result_df[
             "substd_weight(Tons)"
-        ].multiply(
-            (self.final_result_df["cost_per_ton"] + self.final_result_df["opt_cost"])
-        )
+        ].multiply((self.final_result_df["cost_per_ton"]))
 
         self.final_result_df["optimised_cost(Rs.)"] = self.final_result_df[
             "optz_weight(Tons)"
-        ].multiply(
-            (self.final_result_df["cost_per_ton"] + self.final_result_df["opt_cost"])
-        )
+        ].multiply((self.final_result_df["cost_per_ton"]))
 
         temp_lst = [
             "substd_weight(Tons)",
@@ -331,7 +324,7 @@ class ChargeMixer:
             .multiply(self.furnace_size)
         )
         out_df = out_df.merge(self.input_df, on="inputs", how="left")
-        out_df["Cost(Rs.)"] = (out_df["cost_per_ton"] + out_df["opt_cost"]).multiply(
+        out_df["Cost(Rs.)"] = (out_df["cost_per_ton"]).multiply(
             out_df["optz_weight(Tons)"], axis=0
         )
 
@@ -404,7 +397,7 @@ class ChargeMixer:
             )
 
             savings = (
-                self.final_result_df["substd_cost(Rs.)"].sum()
-                - self.final_result_df["optimised_cost(Rs.)"].sum()
+                self.final_result_df["substd_cost(Rs.)"]["Total"]
+                - self.final_result_df["optimised_cost(Rs.)"]["Total"]
             )
             print(f"\n Total Savings: {savings:.2f} Rs.")
