@@ -1,0 +1,32 @@
+[
+    {
+        "elements": "C",
+        "min": 3.6953,
+        "max": 3.8
+    },
+    {
+        "elements": "Si",
+        "min": 2.4,
+        "max": 2.706
+    },
+    {
+        "elements": "P",
+        "min": 0.0,
+        "max": 0.0901
+    },
+    {
+        "elements": "Mg",
+        "min": 0.035,
+        "max": 0.0501
+    },
+    {
+        "elements": "Mn",
+        "min": 0.3,
+        "max": 0.5549
+    },
+    {
+        "elements": "S",
+        "min": 0.0,
+        "max": 0.0249
+    }
+]
