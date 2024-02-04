@@ -45,9 +45,19 @@ class ChargeMixer:
         if self.mode == "with_existing_with_weight_constraints":
             self.test_against_existing = True
             self.weight_constraint = True
+            print(
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight(Tons)'].sum(0):.2f}"
+            )
+            self.furnace_size = self.input_df["substd_weight(Tons)"].sum(0)
+
         if self.mode == "with_existing_no_weight_constraints":
             self.test_against_existing = True
             self.weight_constraint = False
+            print(
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight(Tons)'].sum(0):.2f}"
+            )
+
+            self.furnace_size = self.input_df["substd_weight(Tons)"].sum(0)
         if self.mode == "vanilla_optimization":
             self.test_against_existing = False
             self.weight_constraint = False
