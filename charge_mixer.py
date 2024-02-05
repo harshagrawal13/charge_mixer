@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import pandas as pd
 from scipy.optimize import linprog
@@ -10,21 +11,19 @@ pd.set_option("display.float_format", "{:.3f}".format)
 class ChargeMixer:
     def __init__(
         self,
-        raw_mat_info_file_path,
-        out_charge_mix_file_path,
-        mode,
-        furnace_size=100,
+        input_file_path,
+        out_file_path,
     ) -> None:
         # Ensure file paths exist
-        assert os.path.exists(
-            raw_mat_info_file_path
-        ), f"File {raw_mat_info_file_path} does not exist"
-        assert os.path.exists(
-            out_charge_mix_file_path
-        ), f"File {out_charge_mix_file_path} does not exist"
+        assert os.path.exists(input_file_path), f"File {input_file_path} does not exist"
 
-        self.furnace_size = furnace_size
-        self.mode = mode
+        with open(input_file_path, "r") as outfile:
+            data = json.load(outfile)
+
+        self.furnace_size = data["furnace_size"]
+        self.mode = data["mode"]
+        self.out_results = {}
+        self.out_file_path = out_file_path
 
         assert self.mode in [
             "with_existing_with_weight_constraints",
@@ -34,8 +33,8 @@ class ChargeMixer:
 
         # Read into dataframes
         print("Loading dataframes...")
-        self.input_df = pd.read_json(raw_mat_info_file_path)
-        self.out_req_df = pd.read_json(out_charge_mix_file_path).fillna(0.0)
+        self.input_df = pd.DataFrame.from_records(data["raw_mat_info"])
+        self.out_req_df = pd.DataFrame.from_records(data["out_charge_mix"]).fillna(0.0)
 
         # Preprocess the Input DataFrame
         print("Pre-processing dataframes...")
@@ -46,24 +45,24 @@ class ChargeMixer:
             self.test_against_existing = True
             self.weight_constraint = True
             print(
-                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight(Tons)'].sum(0):.2f}"
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight_tons'].sum(0):.2f}"
             )
-            self.furnace_size = self.input_df["substd_weight(Tons)"].sum(0)
+            self.furnace_size = self.input_df["substd_weight_tons"].sum(0)
 
         if self.mode == "with_existing_no_weight_constraints":
             self.test_against_existing = True
             self.weight_constraint = False
             print(
-                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight(Tons)'].sum(0):.2f}"
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight_tons'].sum(0):.2f}"
             )
 
-            self.furnace_size = self.input_df["substd_weight(Tons)"].sum(0)
+            self.furnace_size = self.input_df["substd_weight_tons"].sum(0)
         if self.mode == "vanilla_optimization":
             self.test_against_existing = False
             self.weight_constraint = False
 
         if self.test_against_existing and all(
-            self.input_df["substd_weight(Tons)"].fillna(0) == 0
+            self.input_df["substd_weight_tons"].fillna(0) == 0
         ):
             print("Please Enter your Existing Weights in the Input File")
             return
@@ -94,12 +93,12 @@ class ChargeMixer:
 
         if self.test_against_existing:
             self.input_df = self.input_df[
-                self.input_df["substd_weight(Tons)"].fillna(0) != 0
+                self.input_df["substd_weight_tons"].fillna(0) != 0
             ]
-            self.non_comp_list = self.non_comp_list + ["substd_weight(Tons)"]
+            self.non_comp_list = self.non_comp_list + ["substd_weight_tons"]
 
         else:
-            self.input_df = self.input_df.drop(columns=["substd_weight(Tons)"])
+            self.input_df = self.input_df.drop(columns=["substd_weight_tons"])
 
         # Get the list of all columns
         cols = list(self.input_df.columns)
@@ -200,15 +199,7 @@ class ChargeMixer:
             bounds=bounds,
         )
 
-        # Print the results
-        if result.success:
-            self.print_results(result, raw_mat_names)
-
-            return result
-
-        else:
-            print("Optimization Failed! Please relax constraints...")
-            return None
+        self.get_results(result, raw_mat_names)
 
     def substandard_test_results(self, input_mix_df):
         self.substd_constraints = pd.DataFrame(
@@ -216,12 +207,12 @@ class ChargeMixer:
             .fillna(0)
             .multiply(
                 (
-                    self.input_df["substd_weight(Tons)"]
+                    self.input_df["substd_weight_tons"]
                     * self.input_df["total_recovery_weight"]
                 )
                 / (
                     (
-                        self.input_df["substd_weight(Tons)"]
+                        self.input_df["substd_weight_tons"]
                         * self.input_df["total_recovery_weight"]
                     ).sum(0)
                 ),
@@ -247,7 +238,7 @@ class ChargeMixer:
 
         final_comp_df = self.input_df.merge(input_mix_df, on="inputs", how="left")
         final_comp_df = final_comp_df.iloc[:, len(self.non_comp_list) : -1].multiply(
-            final_comp_df["optz_weight(Tons)"], axis=0
+            final_comp_df["optz_weight_tons"], axis=0
         )
 
         final_comp_df = pd.DataFrame(
@@ -267,29 +258,29 @@ class ChargeMixer:
             on="inputs",
         )
         self.final_result_df = self.final_result_df[
-            (self.final_result_df["substd_weight(Tons)"] != 0)
-            | (self.final_result_df["optz_weight(Tons)"] != 0)
+            (self.final_result_df["substd_weight_tons"] != 0)
+            | (self.final_result_df["optz_weight_tons"] != 0)
         ].reset_index(drop=True)
 
-        self.final_result_df["optz_weight(Tons)"] = (
-            self.final_result_df["optz_weight(Tons)"]
-            .multiply(1 / self.final_result_df["optz_weight(Tons)"].sum())
+        self.final_result_df["optz_weight_tons"] = (
+            self.final_result_df["optz_weight_tons"]
+            .multiply(1 / self.final_result_df["optz_weight_tons"].sum())
             .multiply(self.furnace_size)
         )
 
-        self.final_result_df["substd_cost(Rs.)"] = self.final_result_df[
-            "substd_weight(Tons)"
+        self.final_result_df["substd_cost_rupees"] = self.final_result_df[
+            "substd_weight_tons"
         ].multiply((self.final_result_df["cost_per_ton"]))
 
-        self.final_result_df["optimised_cost(Rs.)"] = self.final_result_df[
-            "optz_weight(Tons)"
+        self.final_result_df["optimised_cost_rupees"] = self.final_result_df[
+            "optz_weight_tons"
         ].multiply((self.final_result_df["cost_per_ton"]))
 
         temp_lst = [
-            "substd_weight(Tons)",
-            "optz_weight(Tons)",
-            "substd_cost(Rs.)",
-            "optimised_cost(Rs.)",
+            "substd_weight_tons",
+            "optz_weight_tons",
+            "substd_cost_rupees",
+            "optimised_cost_rupees",
         ]
         self.final_result_df.loc["Total"] = self.final_result_df[temp_lst].sum()
 
@@ -298,7 +289,7 @@ class ChargeMixer:
     def optimization_results(self, input_mix_df):
         final_comp_df = self.input_df.merge(input_mix_df, on="inputs", how="left")
         final_comp_df = final_comp_df.iloc[:, len(self.non_comp_list) : -1].multiply(
-            final_comp_df["optz_weight(Tons)"], axis=0
+            final_comp_df["optz_weight_tons"], axis=0
         )
 
         final_comp_df = pd.DataFrame(
@@ -310,58 +301,95 @@ class ChargeMixer:
             final_comp_df, how="outer", on="elements"
         )
 
-    def print_results(self, result, raw_mat_names):
-        print("Optimization Successful!")
-        print(f"\nFurnace(Input) Size: {self.furnace_size} Tons ")
-        print("\nInput Mix:")
+    def get_results(
+        self,
+        result,
+        raw_mat_names,
+    ):
+        if result.success:
+            input_mix_items = []
+            for i, percentage in enumerate(result.x):
+                input_mix_items.append(
+                    {
+                        "inputs": raw_mat_names[i],
+                        "optz_weight_tons": percentage,
+                    }
+                )
+            input_mix_df = pd.DataFrame(input_mix_items)
 
-        input_mix_items = []
-        for i, percentage in enumerate(result.x):
-            input_mix_items.append(
-                {
-                    "inputs": raw_mat_names[i],
-                    "optz_weight(Tons)": percentage,
-                }
+            self.out_df = input_mix_df[
+                input_mix_df["optz_weight_tons"] != 0
+            ].reset_index(drop=True)
+            self.out_df["optz_weight_tons"] = (
+                self.out_df["optz_weight_tons"]
+                .multiply(1 / self.out_df["optz_weight_tons"].sum())
+                .multiply(self.furnace_size)
             )
-        input_mix_df = pd.DataFrame(input_mix_items)
+            self.out_df = self.out_df.merge(self.input_df, on="inputs", how="left")
+            self.out_df["cost_rupees"] = (self.out_df["cost_per_ton"]).multiply(
+                self.out_df["optz_weight_tons"], axis=0
+            )
 
-        out_df = input_mix_df[input_mix_df["optz_weight(Tons)"] != 0].reset_index(
-            drop=True
-        )
-        out_df["optz_weight(Tons)"] = (
-            out_df["optz_weight(Tons)"]
-            .multiply(1 / out_df["optz_weight(Tons)"].sum())
-            .multiply(self.furnace_size)
-        )
-        out_df = out_df.merge(self.input_df, on="inputs", how="left")
-        out_df["Cost(Rs.)"] = (out_df["cost_per_ton"]).multiply(
-            out_df["optz_weight(Tons)"], axis=0
-        )
+            self.out_df = self.out_df[["inputs", "optz_weight_tons", "cost_rupees"]]
+            self.out_df.loc["Total"] = self.out_df[
+                ["optz_weight_tons", "cost_rupees"]
+            ].sum()
 
-        out_df = out_df[["inputs", "optz_weight(Tons)", "Cost(Rs.)"]]
+            laddle_size = self.furnace_size * (
+                1 / (input_mix_df["optz_weight_tons"].sum())
+            )
 
-        out_df.loc["Total"] = out_df[["optz_weight(Tons)", "Cost(Rs.)"]].sum()
+            self.out_results["Furnace_Size"] = round(self.furnace_size, 3)
+            self.out_results["Laddle_Size"] = round(laddle_size, 3)
+            self.out_results["Total_Cost_Per_Ton"] = round(result.fun, 2)
+            self.out_results["Optimized_Input_Mix"] = (
+                self.out_df.iloc[:-1, :].round(3).to_dict(orient="records")
+            )
 
+            if self.test_against_existing:
+                self.substandard_test_results(input_mix_df)
+                savings = (
+                    self.final_result_df["substd_cost_rupees"]["Total"]
+                    - self.final_result_df["optimised_cost_rupees"]["Total"]
+                )
+
+                self.out_results["Final_Composition"] = (
+                    self.final_result_df.iloc[:-1, :].round(3).to_dict(orient="records")
+                )
+                self.out_results["Savings"] = round(savings, 2)
+
+            else:
+                self.optimization_results(input_mix_df)
+
+            self.out_results["Final_Element_Composition"] = (
+                self.final_constraint_df.iloc[:-1, :].round(3).to_dict(orient="records")
+            )
+
+        with open(self.out_file_path, "w") as outfile:
+            json.dump(self.out_results, outfile, indent=4)
+
+    def print_results(self):
+
+        if len(self.out_results) == 0:
+            print("Optimization Failed. Change the Inputs")
+            return None
+
+        print("Optimization Successful!")
+        print(f"\nFurnace(Input) Size: {self.out_results['Furnace_Size']} Tons ")
+        print("\nInput Mix:")
         print(
             tabulate(
-                out_df.fillna("-"),
+                self.out_df.fillna("-"),
                 headers="keys",
                 tablefmt="psql",
                 floatfmt=".3f",
             )
         )
 
-        laddle_size = self.furnace_size * (
-            1 / (input_mix_df["optz_weight(Tons)"].sum())
+        print(f"\nLaddle(Output) Size: {self.out_results['Laddle_Size']} Tons ")
+        print(
+            f"Total Cost Per Ton (Total/Laddle Size): {self.out_results['Total_Cost_Per_Ton']} Rs."
         )
-
-        if self.test_against_existing:
-            self.substandard_test_results(input_mix_df)
-        else:
-            self.optimization_results(input_mix_df)
-
-        print(f"\nLaddle(Output) Size: {laddle_size:.2f} Tons ")
-        print(f"Total Cost Per Ton (Total/Laddle Size): {result.fun:.2f} Rs.")
 
         print("\nFinal Composition (percentage):")
         print(
@@ -379,7 +407,7 @@ class ChargeMixer:
             print(
                 tabulate(
                     self.final_result_df[
-                        ["inputs", "substd_weight(Tons)", "optz_weight(Tons)"]
+                        ["inputs", "substd_weight_tons", "optz_weight_tons"]
                     ]
                     .round(3)
                     .replace(to_replace=0.0, value=np.nan)
@@ -391,11 +419,10 @@ class ChargeMixer:
             )
 
             print("\nSubStandard Vs Optimised Cost Results:")
-
             print(
                 tabulate(
                     self.final_result_df[
-                        ["inputs", "substd_cost(Rs.)", "optimised_cost(Rs.)"]
+                        ["inputs", "substd_cost_rupees", "optimised_cost_rupees"]
                     ]
                     .round(3)
                     .replace(to_replace=0.0, value=np.nan)
@@ -405,9 +432,4 @@ class ChargeMixer:
                     floatfmt=".3f",
                 )
             )
-
-            savings = (
-                self.final_result_df["substd_cost(Rs.)"]["Total"]
-                - self.final_result_df["optimised_cost(Rs.)"]["Total"]
-            )
-            print(f"\n Total Savings: {savings:.2f} Rs.")
+            print(f"\n Total Savings: {self.out_results['Savings']} Rs.")
