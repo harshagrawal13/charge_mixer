@@ -15,34 +15,26 @@ class ChargeMixer:
         out_file_path,
     ) -> None:
         # Ensure file paths exist
+        assert os.path.exists(input_file_path), f"File {input_file_path} does not exist"
+
+        with open(input_file_path, "r") as outfile:
+            data = json.load(outfile)
+
+        self.furnace_size = data["furnace_size"]
+        self.mode = data["mode"]
         self.out_results = {}
         self.out_file_path = out_file_path
-        self.input_file_path = input_file_path
 
-    def check_input_file(self):
-
-        if not os.path.exists(self.input_file_path):
-            self.out_results["Error"] = f"File {self.input_file_path} does not exist"
-            return
-
-        with open(self.input_file_path, "r") as outfile:
-            data = json.load(outfile)
-        self.data = data
-
-        modes = [
+        assert self.mode in [
             "with_existing_with_weight_constraints",
             "with_existing_no_weight_constraints",
             "vanilla_optimization",
-        ]
-
-        if self.data["mode"] not in modes:
-            self.out_results["Error"] = "Please enter a valid mode"
-            return
+        ], "Please enter a valid mode"
 
         # Read into dataframes
         print("Loading dataframes...")
-        self.input_df = pd.DataFrame.from_records(self.data["raw_mat_info"])
-        self.out_req_df = pd.DataFrame.from_records(self.data["out_charge_mix"]).fillna(
+        self.input_df = pd.DataFrame.from_records(data["raw_mat_info"])
+        self.out_req_df = pd.DataFrame.from_records(data["out_charge_mix"]).fillna(
             {"min": 0.0, "max": 100.0}
         )
 
@@ -51,17 +43,22 @@ class ChargeMixer:
         self.preprocessing()
 
     def preprocessing(self):
-
-        self.furnace_size = self.data["furnace_size"]
-        self.mode = self.data["mode"]
         if self.mode == "with_existing_with_weight_constraints":
             self.test_against_existing = True
             self.weight_constraint = True
+            print(
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight_tons'].sum(0):.2f}"
+            )
+            self.furnace_size = self.input_df["substd_weight_tons"].sum(0)
 
         if self.mode == "with_existing_no_weight_constraints":
             self.test_against_existing = True
             self.weight_constraint = False
+            print(
+                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight_tons'].sum(0):.2f}"
+            )
 
+            self.furnace_size = self.input_df["substd_weight_tons"].sum(0)
         if self.mode == "vanilla_optimization":
             self.test_against_existing = False
             self.weight_constraint = False
@@ -70,27 +67,26 @@ class ChargeMixer:
             self.input_df["substd_weight_tons"].fillna(0) == 0
         ):
             print("Please Enter your Existing Weights in the Input File")
-            self.out_results["Error"] = (
-                "Please Enter your Existing Weights in the Input File"
-            )
             return
-
         if (
             self.weight_constraint
             and all(self.input_df["min_weight"].fillna(0) == 0)
             and all(self.input_df["max_weight"].fillna("-") == "-")
         ):
             print("Please Enter your Min-Max Weights Constraints in the Input File")
-            self.out_results["Error"] = (
-                "Please Enter your Min-Max Weights Constraints in the Input File"
-            )
             return
+
+        self.input_df["total_recovery_weight_percent"] = (
+            self.input_df["total_recovery_weight_percent"].astype(float) * 0.01
+        )
 
         self.non_comp_list = [
             "input_name",
             "cost_per_ton",
             "avl_quantity",
             "total_recovery_weight_percent",
+            "min_weight",
+            "max_weight",
         ]
 
         if self.test_against_existing:
@@ -98,25 +94,9 @@ class ChargeMixer:
                 self.input_df["substd_weight_tons"].fillna(0) != 0
             ]
             self.non_comp_list = self.non_comp_list + ["substd_weight_tons"]
-            print(
-                f"Furnace Size: {self.furnace_size} -> {self.input_df['substd_weight_tons'].sum(0):.2f}"
-            )
-            self.furnace_size = self.input_df["substd_weight_tons"].sum(0)
 
         else:
             self.input_df = self.input_df.drop(columns=["substd_weight_tons"])
-
-        if self.weight_constraint:
-            self.input_df = self.input_df.fillna({"min_weight": 0})
-            self.non_comp_list = self.non_comp_list + ["min_weight", "max_weight"]
-
-        else:
-            self.input_df = self.input_df.drop(columns=["min_weight", "max_weight"])
-
-        self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
-        self.input_df["total_recovery_weight_percent"] = (
-            self.input_df["total_recovery_weight_percent"].astype(float) * 0.01
-        )
 
         # Get the list of all columns
         cols = list(self.input_df.columns)
@@ -129,6 +109,9 @@ class ChargeMixer:
 
         # Sorting the DataFrame
         self.input_df = self.input_df[cols]
+
+        # Preprocessing Cost per Ton and checking availability
+        self.input_df = self.input_df[self.input_df["cost_per_ton"] != 0]
 
         # After multiplying each value by yield, the values are in unit weight.
         self.input_df.iloc[:, len(self.non_comp_list) :] = self.input_df.iloc[
@@ -147,7 +130,9 @@ class ChargeMixer:
         if self.weight_constraint:
             bounds = list(
                 zip(
-                    self.input_df["min_weight"].multiply(1 / self.furnace_size),
+                    self.input_df["min_weight"]
+                    .fillna(0)
+                    .multiply(1 / self.furnace_size),
                     self.input_df["max_weight"].multiply(1 / self.furnace_size),
                 )
             )
@@ -179,41 +164,30 @@ class ChargeMixer:
         )
 
     def run_optimization(self):
+        (
+            A_ub,
+            raw_mat_names,
+            raw_mat_costs,
+            min_percentages,
+            max_percentages,
+            bounds,
+        ) = self.get_optimizer_inputs()
 
-        self.check_input_file()
-        try:
-            (
-                A_ub,
-                raw_mat_names,
-                raw_mat_costs,
-                min_percentages,
-                max_percentages,
-                bounds,
-            ) = self.get_optimizer_inputs()
+        costs = raw_mat_costs
+        A_min = -A_ub
+        b_min = -np.array(min_percentages)
 
-            costs = raw_mat_costs
-            A_min = -A_ub
-            b_min = -np.array(min_percentages)
+        A_max = A_ub
+        b_max = np.array(max_percentages)
 
-            A_max = A_ub
-            b_max = np.array(max_percentages)
+        result = linprog(
+            costs,
+            A_ub=np.vstack([A_min, A_max]),
+            b_ub=np.hstack([b_min, b_max]),
+            bounds=bounds,
+        )
 
-            result = linprog(
-                costs,
-                A_ub=np.vstack([A_min, A_max]),
-                b_ub=np.hstack([b_min, b_max]),
-                bounds=bounds,
-            )
-            self.get_results(result, raw_mat_names)
-
-        except:
-            if len(self.out_results) == 0:
-                self.out_results["Error"] = (
-                    "Please Check the Input File and Columns of Data"
-                )
-
-        with open(self.out_file_path, "w") as outfile:
-            json.dump(self.out_results, outfile, indent=4)
+        self.get_results(result, raw_mat_names)
 
     def substandard_test_results(self, input_mix_df):
         self.substd_constraints = pd.DataFrame(
@@ -379,13 +353,13 @@ class ChargeMixer:
                 self.final_constraint_df.iloc[:-1, :].round(3).to_dict(orient="records")
             )
 
-        else:
-            self.out_results["Error"] = "Optimization Failed. Change the Inputs or Mode"
+        with open(self.out_file_path, "w") as outfile:
+            json.dump(self.out_results, outfile, indent=4)
 
     def print_results(self):
 
         if len(self.out_results) == 0:
-            print("Optimization Failed. Change the Inputs or Mode")
+            print("Optimization Failed. Change the Inputs")
             return None
 
         print("Optimization Successful!")
