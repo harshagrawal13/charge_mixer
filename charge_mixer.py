@@ -22,7 +22,7 @@ class ChargeMixer:
     def check_input_file(self):
 
         if not os.path.exists(self.input_file_path):
-            self.out_results["Error"] = f"File {self.input_file_path} does not exist"
+            self.out_results["error"] = f"File {self.input_file_path} does not exist"
             return
 
         with open(self.input_file_path, "r") as outfile:
@@ -36,7 +36,7 @@ class ChargeMixer:
         ]
 
         if self.data["mode"] not in modes:
-            self.out_results["Error"] = "Please enter a valid mode"
+            self.out_results["error"] = "Please enter a valid mode"
             return
 
         # Read into dataframes
@@ -70,7 +70,7 @@ class ChargeMixer:
             self.input_df["substd_weight_tons"].fillna(0) == 0
         ):
             print("Please Enter your Existing Weights in the Input File")
-            self.out_results["Error"] = (
+            self.out_results["error"] = (
                 "Please Enter your Existing Weights in the Input File"
             )
             return
@@ -81,7 +81,7 @@ class ChargeMixer:
             and all(self.input_df["max_weight"].fillna("-") == "-")
         ):
             print("Please Enter your Min-Max Weights Constraints in the Input File")
-            self.out_results["Error"] = (
+            self.out_results["error"] = (
                 "Please Enter your Min-Max Weights Constraints in the Input File"
             )
             return
@@ -208,7 +208,7 @@ class ChargeMixer:
 
         except:
             if len(self.out_results) == 0:
-                self.out_results["Error"] = (
+                self.out_results["error"] = (
                     "Please Check the Input File and Columns of Data"
                 )
 
@@ -353,10 +353,10 @@ class ChargeMixer:
                 1 / (input_mix_df["optz_weight_tons"].sum())
             )
 
-            self.out_results["Furnace_Size"] = round(self.furnace_size, 3)
-            self.out_results["Laddle_Size"] = round(laddle_size, 3)
-            self.out_results["Total_Cost_Per_Ton"] = round(result.fun, 2)
-            self.out_results["Optimized_Input_Mix"] = (
+            self.out_results["furnace_size"] = round(self.furnace_size, 3)
+            self.out_results["laddle_size"] = round(laddle_size, 3)
+            self.out_results["total_cost_per_ton"] = round(result.fun, 2)
+            self.out_results["optimized_input_mix"] = (
                 self.out_df.iloc[:-1, :].round(3).to_dict(orient="records")
             )
 
@@ -367,20 +367,26 @@ class ChargeMixer:
                     - self.final_result_df["optimised_cost_rupees"]["Total"]
                 )
 
-                self.out_results["Final_Composition"] = (
+                self.out_results["final_composition"] = (
                     self.final_result_df.iloc[:-1, :].round(3).to_dict(orient="records")
                 )
-                self.out_results["Savings"] = round(savings, 2)
+
+                if savings >= 0:
+                    self.out_results["substandard_optimisation"] = True
+                else:
+                    self.out_results["substandard_optimisation"] = False
+
+                self.out_results["savings"] = round(savings, 2)
 
             else:
                 self.optimization_results(input_mix_df)
 
-            self.out_results["Final_Element_Composition"] = (
+            self.out_results["final_element_composition"] = (
                 self.final_constraint_df.iloc[:-1, :].round(3).to_dict(orient="records")
             )
 
         else:
-            self.out_results["Error"] = "Optimization Failed. Change the Inputs or Mode"
+            self.out_results["error"] = "Optimization Failed. Change the Inputs or Mode"
 
     def print_results(self):
 
@@ -389,7 +395,7 @@ class ChargeMixer:
             return None
 
         print("Optimization Successful!")
-        print(f"\nFurnace(Input) Size: {self.out_results['Furnace_Size']} Tons ")
+        print(f"\nFurnace(Input) Size: {self.out_results['furnace_size']} Tons ")
         print("\nInput Mix:")
         print(
             tabulate(
@@ -400,9 +406,9 @@ class ChargeMixer:
             )
         )
 
-        print(f"\nLaddle(Output) Size: {self.out_results['Laddle_Size']} Tons ")
+        print(f"\nLaddle(Output) Size: {self.out_results['laddle_size']} Tons ")
         print(
-            f"Total Cost Per Ton (Total/Laddle Size): {self.out_results['Total_Cost_Per_Ton']} Rs."
+            f"Total Cost Per Ton (Total/Laddle Size): {self.out_results['total_cost_per_ton']} Rs."
         )
 
         print("\nFinal Composition (percentage):")
@@ -446,4 +452,4 @@ class ChargeMixer:
                     floatfmt=".3f",
                 )
             )
-            print(f"\n Total Savings: {self.out_results['Savings']} Rs.")
+            print(f"\n Total Savings: {self.out_results['savings']} Rs.")
