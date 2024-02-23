@@ -376,6 +376,18 @@ class ChargeMixer:
                 else:
                     self.out_results["substandard_optimisation"] = False
 
+                substd_cost_per_ton_output = (
+                    self.final_result_df["substd_cost_rupees"]["Total"]
+                ) / (
+                    (
+                        self.input_df["substd_weight_tons"]
+                        * self.input_df["total_recovery_weight_percent"]
+                    ).sum(0)
+                )
+
+                self.out_results["substandard_cost_per_ton_output"] = round(
+                    substd_cost_per_ton_output, 2
+                )
                 self.out_results["savings"] = round(savings, 2)
 
             else:
